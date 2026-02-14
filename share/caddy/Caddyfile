@@ -1,0 +1,65 @@
+:8080 {
+  # Logs básicos
+  log {
+    output stdout
+    format console
+  }
+
+  # Compresión
+  encode zstd gzip
+
+  # Seguridad: limitar métodos
+  @notSafeMethods {
+    not method GET HEAD
+  }
+  respond @notSafeMethods 405
+
+  # Headers básicos (prudentes)
+  header {
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    # OJO: si vas a embeber en un iframe dentro de HA, SAMEORIGIN puede bloquear.
+    # Si NO se embebe, SAMEORIGIN es ok:
+    X-Frame-Options "SAMEORIGIN"
+    # HSTS SOLO si estás detrás de HTTPS real:
+    # Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    # CSP inicial permisiva (o mantener comentada hasta validar por juego):
+    # Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; media-src 'self' data: blob:;"
+  }
+
+  # Cache razonable para assets estáticos
+  @staticAssets {
+    path *.css *.js *.mjs *.png *.jpg *.jpeg *.gif *.webp *.svg *.ico *.woff *.woff2 *.ttf *.otf *.mp3 *.wav *.ogg
+  }
+  header @staticAssets Cache-Control "public, max-age=604800, immutable"
+
+  # --- RUTA CORTA /g (site completo) ---
+  handle_path /g* {
+    root * /srv/webgames/site1
+    try_files {path} {path}/ /index.html
+    # Evitar listing
+    file_server {
+      hide .*
+    }
+  }
+
+  # Alias opcionales super cortos (/j1, /j2)
+  handle_path /j1* {
+    root * /srv/webgames/site1/games/juego1
+    try_files {path} {path}/ /index.html
+    file_server {
+      hide .*
+    }
+  }
+
+  handle_path /j2* {
+    root * /srv/webgames/site1/games/juego2
+    try_files {path} {path}/ /index.html
+    file_server {
+      hide .*
+    }
+  }
+
+  # Fallback: 404
+  respond 404
+}
