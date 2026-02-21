@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HoneySwepper</title>
+  <style>
+    :root {
+      --bg0: #2f1908;
+      --bg1: #8f4a10;
+      --ink: #fff9e7;
+      --muted: #f9d184;
+      --cell: #d99234;
+      --cell-shadow: #9a5912;
+      --panel: #5d2f0f;
+      --accent: #ffd35e;
+      --danger: #f87171;
+      --ok: #34d399;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      color: var(--ink);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(1000px 680px at 10% 10%, #e39a3b 0%, transparent 58%),
+        radial-gradient(1100px 680px at 90% 95%, #6f3810 0%, transparent 58%),
+        linear-gradient(155deg, var(--bg0), var(--bg1));
+    }
+
+    .wrap {
+      width: min(100vw - 18px, 1060px);
+      display: grid;
+      gap: 10px;
+      justify-items: center;
+    }
+
+    canvas {
+      width: 100%;
+      max-width: 1024px;
+      aspect-ratio: 16 / 10;
+      border: 1px solid #a76622;
+      border-radius: 14px;
+      box-shadow: 0 20px 64px rgba(0, 0, 0, 0.45);
+      background: #4d280d;
+      touch-action: none;
+    }
+
+    .hint {
+      font-size: 13px;
+      text-align: center;
+      color: var(--muted);
+      line-height: 1.4;
+      max-width: 780px;
+    }
+
+    a { color: #fde68a; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="1024" height="640" aria-label="HoneySwepper"></canvas>
+    <div class="hint">
+      HoneySwepper (clasico): Click/Tap revela, clic derecho bandera, X alterna modo bandera, R reinicia, F fullscreen. <a href="/g">Volver</a>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+
+      const W = canvas.width;
+      const H = canvas.height;
+      const ROWS = 9;
+      const COLS = 9;
+      const MINES = 10;
+      const CELL = 48;
+      const BOARD_W = COLS * CELL;
+      const BOARD_H = ROWS * CELL;
+      const BOARD_X = Math.floor((W - BOARD_W) / 2);
+      const BOARD_Y = 154;
+
+      const resetBtn = { x: 70, y: 30, w: 192, h: 48 };
+      const flagBtn = { x: W - 306, y: 30, w: 232, h: 48 };
+
+      const numberColors = {
+        1: "#bfdbfe",
+        2: "#86efac",
+        3: "#fca5a5",
+        4: "#a5b4fc",
+        5: "#f9a8d4",
+        6: "#67e8f9",
+        7: "#fef08a",
+        8: "#d1d5db",
+      };
+
+      function newCell() {
+        return {
+          mine: false,
+          adj: 0,
+          revealed: false,
+          flagged: false,
+          exploded: false,
+        };
+      }
+
+      const state = {
+        title: "HoneySwepper",
+        mode: "menu",
+        grid: Array.from({ length: ROWS }, () => Array.from({ length: COLS }, () => newCell())),
+        firstMovePending: true,
+        revealedSafe: 0,
+        flagsUsed: 0,
+        elapsedMs: 0,
+        tick: 0,
+        message: "Pulsa ENTER o haz click en el tablero para empezar",
+        hover: null,
+        tapFlagMode: false,
+      };
+
+      function resetBoard() {
+        state.grid = Array.from({ length: ROWS }, () => Array.from({ length: COLS }, () => newCell()));
+        state.mode = "playing";
+        state.firstMovePending = true;
+        state.revealedSafe = 0;
+        state.flagsUsed = 0;
+        state.elapsedMs = 0;
+        state.tick = 0;
+        state.hover = null;
+        state.message = "Encuentra las minas sin pisarlas";
+      }
+
+      function forNeighbors(r, c, fn) {
+        for (let dr = -1; dr <= 1; dr += 1) {
+          for (let dc = -1; dc <= 1; dc += 1) {
+            if (dr === 0 && dc === 0) continue;
+            const nr = r + dr;
+            const nc = c + dc;
+            if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+            fn(nr, nc);
+          }
+        }
+      }
+
+      function placeMines(safeR, safeC) {
+        const candidates = [];
+        for (let r = 0; r < ROWS; r += 1) {
+          for (let c = 0; c < COLS; c += 1) {
+            const protectedCell = Math.abs(r - safeR) <= 1 && Math.abs(c - safeC) <= 1;
+            if (!protectedCell) candidates.push([r, c]);
+          }
+        }
+
+        for (let i = candidates.length - 1; i > 0; i -= 1) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+        }
+
+        for (let i = 0; i < MINES; i += 1) {
+          const [r, c] = candidates[i];
+          state.grid[r][c].mine = true;
+        }
+
+        for (let r = 0; r < ROWS; r += 1) {
+          for (let c = 0; c < COLS; c += 1) {
+            if (state.grid[r][c].mine) continue;
+            let around = 0;
+            forNeighbors(r, c, (nr, nc) => {
+              if (state.grid[nr][nc].mine) around += 1;
+            });
+            state.grid[r][c].adj = around;
+          }
+        }
+      }
+
+      function revealMines() {
+        for (let r = 0; r < ROWS; r += 1) {
+          for (let c = 0; c < COLS; c += 1) {
+            const cell = state.grid[r][c];
+            if (cell.mine) cell.revealed = true;
+          }
+        }
+      }
+
+      function autoFlagRemainingMines() {
+        for (let r = 0; r < ROWS; r += 1) {
+          for (let c = 0; c < COLS; c += 1) {
+            const cell = state.grid[r][c];
+            if (cell.mine && !cell.flagged) {
+              cell.flagged = true;
+              state.flagsUsed += 1;
+            }
+          }
+        }
+      }
+
+      function checkWin() {
+        const totalSafe = ROWS * COLS - MINES;
+        if (state.revealedSafe >= totalSafe) {
+          state.mode = "won";
+          autoFlagRemainingMines();
+          state.message = "Colmena despejada. Ganaste";
+        }
+      }
+
+      function floodReveal(startR, startC) {
+        const queue = [[startR, startC]];
+        while (queue.length > 0) {
+          const [r, c] = queue.shift();
+          const cell = state.grid[r][c];
+          if (cell.revealed || cell.flagged) continue;
+          cell.revealed = true;
+
+          if (!cell.mine) {
+            state.revealedSafe += 1;
+          }
+
+          if (cell.adj === 0 && !cell.mine) {
+            forNeighbors(r, c, (nr, nc) => {
+              const next = state.grid[nr][nc];
+              if (!next.revealed && !next.flagged && !next.mine) {
+                queue.push([nr, nc]);
+              }
+            });
+          }
+        }
+      }
+
+      function revealCell(r, c) {
+        if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return;
+        if (state.mode === "won" || state.mode === "lost") return;
+        if (state.mode === "menu") resetBoard();
+
+        const cell = state.grid[r][c];
+        if (cell.flagged || cell.revealed) return;
+
+        if (state.firstMovePending) {
+          placeMines(r, c);
+          state.firstMovePending = false;
+        }
+
+        if (cell.mine) {
+          cell.exploded = true;
+          state.mode = "lost";
+          state.message = "Boom. Habia una mina";
+          revealMines();
+          return;
+        }
+
+        floodReveal(r, c);
+        checkWin();
+      }
+
+      function toggleFlag(r, c) {
+        if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return;
+        if (state.mode === "won" || state.mode === "lost") return;
+        if (state.mode === "menu") resetBoard();
+
+        const cell = state.grid[r][c];
+        if (cell.revealed) return;
+
+        if (cell.flagged) {
+          cell.flagged = false;
+          state.flagsUsed = Math.max(0, state.flagsUsed - 1);
+          return;
+        }
+
+        if (state.flagsUsed >= MINES) return;
+        cell.flagged = true;
+        state.flagsUsed += 1;
+      }
+
+      function boardCellAt(x, y) {
+        const col = Math.floor((x - BOARD_X) / CELL);
+        const row = Math.floor((y - BOARD_Y) / CELL);
+        if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return null;
+        return { r: row, c: col };
+      }
+
+      function pointInRect(x, y, rect) {
+        return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+      }
+
+      function eventPosToCanvas(ev) {
+        const rect = canvas.getBoundingClientRect();
+        const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
+        const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
+        return { x, y };
+      }
+
+      function handlePointerAction(x, y, isRightClick = false) {
+        if (pointInRect(x, y, resetBtn)) {
+          resetBoard();
+          return;
+        }
+        if (pointInRect(x, y, flagBtn)) {
+          state.tapFlagMode = !state.tapFlagMode;
+          return;
+        }
+
+        const cell = boardCellAt(x, y);
+        if (!cell) return;
+
+        const useFlag = isRightClick || state.tapFlagMode;
+        if (useFlag) toggleFlag(cell.r, cell.c);
+        else revealCell(cell.r, cell.c);
+      }
+
+      function drawHoneycomb() {
+        const size = 28;
+        const h = Math.sqrt(3) * size;
+        ctx.save();
+        ctx.globalAlpha = 0.12;
+        ctx.strokeStyle = "#fbbf24";
+        ctx.lineWidth = 1;
+
+        for (let y = -size; y < H + size; y += h) {
+          for (let x = -size; x < W + size; x += size * 3) {
+            const ox = ((Math.floor(y / h) % 2) * size * 1.5);
+            drawHex(x + ox, y, size);
+          }
+        }
+
+        ctx.restore();
+      }
+
+      function drawHex(cx, cy, r) {
+        ctx.beginPath();
+        for (let i = 0; i < 6; i += 1) {
+          const a = (Math.PI / 3) * i + Math.PI / 6;
+          const px = cx + Math.cos(a) * r;
+          const py = cy + Math.sin(a) * r;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      }
+
+      function drawTopPanel() {
+        ctx.fillStyle = "rgba(68, 32, 10, 0.86)";
+        ctx.fillRect(44, 18, W - 88, 90);
+        ctx.strokeStyle = "rgba(251, 191, 36, 0.7)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(44, 18, W - 88, 90);
+
+        drawButton(resetBtn, "Nuevo juego (R)", false);
+        drawButton(flagBtn, state.tapFlagMode ? "Modo bandera: ON (X)" : "Modo bandera: OFF (X)", state.tapFlagMode);
+
+        ctx.fillStyle = "#fff9e7";
+        ctx.font = "bold 30px Trebuchet MS, Segoe UI, sans-serif";
+        ctx.fillText("HoneySwepper", 378, 50);
+
+        ctx.font = "bold 18px Trebuchet MS, Segoe UI, sans-serif";
+        const minesLeft = Math.max(0, MINES - state.flagsUsed);
+        ctx.fillStyle = "#fde68a";
+        ctx.fillText(`Minas: ${MINES}`, 380, 78);
+        ctx.fillText(`Banderas usadas: ${state.flagsUsed}`, 500, 78);
+        ctx.fillText(`Restantes: ${minesLeft}`, 710, 78);
+
+        ctx.fillStyle = "#fef3c7";
+        const sec = (state.elapsedMs / 1000).toFixed(1);
+        ctx.fillText(`Tiempo: ${sec}s`, 380, 102);
+      }
+
+      function drawButton(rect, label, active) {
+        const grad = ctx.createLinearGradient(rect.x, rect.y, rect.x, rect.y + rect.h);
+        grad.addColorStop(0, active ? "#fcd34d" : "#f59e0b");
+        grad.addColorStop(1, active ? "#d97706" : "#b45309");
+        ctx.fillStyle = grad;
+        ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+        ctx.fillStyle = active ? "#3f2506" : "#fff7ed";
+        ctx.font = "bold 16px Trebuchet MS, Segoe UI, sans-serif";
+        ctx.fillText(label, rect.x + 14, rect.y + 31);
+      }
+
+      function drawBoard() {
+        ctx.fillStyle = "rgba(70, 36, 12, 0.94)";
+        ctx.fillRect(BOARD_X - 14, BOARD_Y - 14, BOARD_W + 28, BOARD_H + 28);
+        ctx.strokeStyle = "rgba(252, 211, 77, 0.65)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(BOARD_X - 14, BOARD_Y - 14, BOARD_W + 28, BOARD_H + 28);
+
+        for (let r = 0; r < ROWS; r += 1) {
+          for (let c = 0; c < COLS; c += 1) {
+            const x = BOARD_X + c * CELL;
+            const y = BOARD_Y + r * CELL;
+            const cell = state.grid[r][c];
+            const hovered = state.hover && state.hover.r === r && state.hover.c === c;
+
+            if (cell.revealed) {
+              ctx.fillStyle = cell.mine ? "#7f1d1d" : "#fef3c7";
+              ctx.fillRect(x + 1, y + 1, CELL - 2, CELL - 2);
+
+              if (cell.mine) {
+                ctx.fillStyle = cell.exploded ? "#fecaca" : "#fca5a5";
+                ctx.beginPath();
+                ctx.arc(x + CELL / 2, y + CELL / 2, 12, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = "#2f1908";
+                ctx.font = "bold 18px Trebuchet MS, Segoe UI, sans-serif";
+                ctx.fillText("B", x + 18, y + 30);
+              } else if (cell.adj > 0) {
+                ctx.fillStyle = numberColors[cell.adj] || "#334155";
+                ctx.font = "bold 28px Trebuchet MS, Segoe UI, sans-serif";
+                ctx.fillText(String(cell.adj), x + 16, y + 34);
+              }
+            } else {
+              const grad = ctx.createLinearGradient(x, y, x, y + CELL);
+              grad.addColorStop(0, hovered ? "#fbbf24" : "#e9a03d");
+              grad.addColorStop(1, hovered ? "#c27a1d" : "#b86b14");
+              ctx.fillStyle = grad;
+              ctx.fillRect(x + 1, y + 1, CELL - 2, CELL - 2);
+
+              ctx.strokeStyle = "rgba(255, 245, 220, 0.3)";
+              ctx.strokeRect(x + 3, y + 3, CELL - 6, CELL - 6);
+
+              if (cell.flagged) {
+                ctx.fillStyle = "#fde68a";
+                ctx.beginPath();
+                ctx.moveTo(x + 16, y + 36);
+                ctx.lineTo(x + 16, y + 11);
+                ctx.lineTo(x + 34, y + 18);
+                ctx.lineTo(x + 16, y + 24);
+                ctx.closePath();
+                ctx.fill();
+                ctx.strokeStyle = "#fff7ed";
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(x + 16, y + 11);
+                ctx.lineTo(x + 16, y + 38);
+                ctx.stroke();
+              }
+            }
+
+            ctx.strokeStyle = "rgba(91, 41, 10, 0.8)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x, y, CELL, CELL);
+          }
+        }
+      }
+
+      function drawMessageBar() {
+        const color = state.mode === "lost" ? "#fecaca" : state.mode === "won" ? "#bbf7d0" : "#fef3c7";
+        ctx.fillStyle = "rgba(68, 32, 10, 0.9)";
+        ctx.fillRect(120, 594, W - 240, 30);
+        ctx.strokeStyle = "rgba(252, 211, 77, 0.55)";
+        ctx.strokeRect(120, 594, W - 240, 30);
+        ctx.fillStyle = color;
+        ctx.font = "bold 16px Trebuchet MS, Segoe UI, sans-serif";
+        ctx.fillText(state.message, 136, 615);
+      }
+
+      function drawOverlayIfNeeded() {
+        if (state.mode === "playing") return;
+
+        ctx.fillStyle = "rgba(31, 20, 9, 0.62)";
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.fillStyle = "rgba(94, 47, 15, 0.93)";
+        ctx.fillRect(210, 208, W - 420, 224);
+        ctx.strokeStyle = "rgba(253, 224, 71, 0.72)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(210, 208, W - 420, 224);
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#fff8e1";
+        ctx.font = "bold 50px Trebuchet MS, Segoe UI, sans-serif";
+        ctx.fillText("HONEY SWEPPER", W / 2, 276);
+
+        ctx.font = "20px Trebuchet MS, Segoe UI, sans-serif";
+        if (state.mode === "menu") {
+          ctx.fillStyle = "#fde68a";
+          ctx.fillText("Version clasica de Buscaminas", W / 2, 320);
+          ctx.fillStyle = "#fff7ed";
+          ctx.fillText("ENTER o click en una celda para empezar", W / 2, 350);
+        } else if (state.mode === "won") {
+          ctx.fillStyle = "#bbf7d0";
+          ctx.fillText("Ganaste. La colmena esta limpia", W / 2, 320);
+          ctx.fillStyle = "#fff7ed";
+          ctx.fillText("Pulsa R o usa Nuevo juego", W / 2, 350);
+        } else {
+          ctx.fillStyle = "#fecaca";
+          ctx.fillText("Perdiste. Tocaste una mina", W / 2, 320);
+          ctx.fillStyle = "#fff7ed";
+          ctx.fillText("Pulsa R o usa Nuevo juego", W / 2, 350);
+        }
+
+        ctx.fillStyle = "#fef3c7";
+        ctx.font = "16px Trebuchet MS, Segoe UI, sans-serif";
+        ctx.fillText("Click revela | Clic derecho bandera | X modo bandera | F fullscreen", W / 2, 390);
+        ctx.textAlign = "start";
+      }
+
+      function update(dt) {
+        state.tick += dt;
+        if (state.mode === "playing") {
+          state.elapsedMs += dt * 1000;
+        }
+      }
+
+      function render() {
+        const bg = ctx.createLinearGradient(0, 0, 0, H);
+        bg.addColorStop(0, "#3f200b");
+        bg.addColorStop(1, "#6f3810");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, W, H);
+
+        drawHoneycomb();
+        drawTopPanel();
+        drawBoard();
+        drawMessageBar();
+        drawOverlayIfNeeded();
+      }
+
+      function gameToText() {
+        const board = state.grid.map((row) => row.map((cell) => {
+          if (cell.revealed) {
+            if (cell.mine) return "M";
+            if (cell.adj === 0) return ".";
+            return String(cell.adj);
+          }
+          if (cell.flagged) return "F";
+          return "#";
+        }));
+
+        return JSON.stringify({
+          title: state.title,
+          coordinateSystem: "tablero 9x9 indexado como fila/columna desde 0; origen (0,0) arriba-izquierda",
+          mode: state.mode,
+          boardSize: { rows: ROWS, cols: COLS },
+          minesTotal: MINES,
+          flagsUsed: state.flagsUsed,
+          minesRemainingEstimate: Math.max(0, MINES - state.flagsUsed),
+          revealedSafe: state.revealedSafe,
+          firstMovePending: state.firstMovePending,
+          elapsedSec: Number((state.elapsedMs / 1000).toFixed(2)),
+          hoverCell: state.hover ? { r: state.hover.r, c: state.hover.c } : null,
+          message: state.message,
+          board,
+        });
+      }
+
+      function advanceBy(ms) {
+        const fixed = 1 / 60;
+        const steps = Math.max(1, Math.round(ms / (1000 / 60)));
+        for (let i = 0; i < steps; i += 1) {
+          update(fixed);
+        }
+        render();
+      }
+
+      function toggleFullscreen() {
+        if (!document.fullscreenElement) {
+          canvas.requestFullscreen().catch(() => {});
+        } else {
+          document.exitFullscreen().catch(() => {});
+        }
+      }
+
+      window.addEventListener("keydown", (ev) => {
+        const key = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+        if (key === "Enter" && state.mode !== "playing") {
+          resetBoard();
+        }
+        if (key === "r") {
+          resetBoard();
+        }
+        if (key === "x") {
+          state.tapFlagMode = !state.tapFlagMode;
+        }
+        if (key === "f") {
+          toggleFullscreen();
+        }
+      });
+
+      canvas.addEventListener("contextmenu", (ev) => ev.preventDefault());
+
+      canvas.addEventListener("mousemove", (ev) => {
+        const pos = eventPosToCanvas(ev);
+        state.hover = boardCellAt(pos.x, pos.y);
+      });
+
+      canvas.addEventListener("mouseleave", () => {
+        state.hover = null;
+      });
+
+      canvas.addEventListener("pointerdown", (ev) => {
+        const pos = eventPosToCanvas(ev);
+        const rightClick = ev.button === 2;
+        handlePointerAction(pos.x, pos.y, rightClick);
+        ev.preventDefault();
+      });
+
+      let last = 0;
+      function loop(ts) {
+        const dt = Math.min(0.05, (ts - last) / 1000 || 1 / 60);
+        last = ts;
+        update(dt);
+        render();
+        requestAnimationFrame(loop);
+      }
+
+      window.render_game_to_text = gameToText;
+      window.advanceTime = advanceBy;
+
+      render();
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>

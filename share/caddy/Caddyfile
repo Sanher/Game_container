@@ -43,7 +43,7 @@
     }
   }
 
-  # Alias opcionales super cortos (/j1, /j2)
+  # Alias opcionales super cortos (/j1, /j2, /j3, /j4, /j5, /j6)
   handle_path /j1* {
     root * /srv/webgames/site1/games/juego1
     try_files {path} {path}/ /index.html
@@ -54,6 +54,38 @@
 
   handle_path /j2* {
     root * /srv/webgames/site1/games/juego2
+    try_files {path} {path}/ /index.html
+    file_server {
+      hide .*
+    }
+  }
+
+  handle_path /j3* {
+    root * /srv/webgames/site1/games/juego3
+    try_files {path} {path}/ /index.html
+    file_server {
+      hide .*
+    }
+  }
+
+  handle_path /j4* {
+    root * /srv/webgames/site1/games/juego4
+    try_files {path} {path}/ /index.html
+    file_server {
+      hide .*
+    }
+  }
+
+  handle_path /j5* {
+    root * /srv/webgames/site1/games/juego5
+    try_files {path} {path}/ /index.html
+    file_server {
+      hide .*
+    }
+  }
+
+  handle_path /j6* {
+    root * /srv/webgames/site1/games/juego6
     try_files {path} {path}/ /index.html
     file_server {
       hide .*

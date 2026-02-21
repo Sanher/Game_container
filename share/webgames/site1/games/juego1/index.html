@@ -3,11 +3,375 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Juego 1</title>
+  <title>Line Thre</title>
+  <style>
+    :root {
+      --bg0: #11223b;
+      --bg1: #223a5e;
+      --ink: #eaf2ff;
+      --muted: #a9c3ea;
+      --panel: #0f1b2f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      color: var(--ink);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(1000px 700px at 12% 12%, #365f99 0%, transparent 60%),
+        radial-gradient(1000px 700px at 86% 90%, #143d6e 0%, transparent 60%),
+        linear-gradient(165deg, var(--bg0), var(--bg1));
+    }
+    .wrap {
+      width: min(100vw - 20px, 980px);
+      display: grid;
+      gap: 10px;
+      justify-items: center;
+    }
+    canvas {
+      width: 100%;
+      max-width: 920px;
+      aspect-ratio: 16 / 10;
+      border: 1px solid #6f95cf;
+      border-radius: 12px;
+      background: #0d1730;
+      box-shadow: 0 18px 52px rgba(0, 0, 0, 0.45);
+      touch-action: none;
+    }
+    .hint {
+      font-size: 13px;
+      color: var(--muted);
+      text-align: center;
+      line-height: 1.4;
+    }
+    a { color: #cde3ff; }
+  </style>
 </head>
 <body>
-  <h1>Juego 1 listo</h1>
-  <p>Ruta esperada: <code>/g/j1</code> y alias <code>/j1</code>.</p>
-  <a href="/g">Volver</a>
+  <div class="wrap">
+    <canvas id="game" width="920" height="620" aria-label="Line Thre"></canvas>
+    <div class="hint">Line Thre (provisional): click para seleccionar e intercambiar fichas adyacentes. R reinicia, F fullscreen. <a href="/g">Volver</a></div>
+  </div>
+
+  <script>
+    (() => {
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+
+      const W = canvas.width;
+      const H = canvas.height;
+      const ROWS = 8;
+      const COLS = 8;
+      const CELL = 58;
+      const BX = Math.floor((W - COLS * CELL) / 2);
+      const BY = 112;
+      const TYPES = 6;
+
+      const colors = ["#60a5fa", "#34d399", "#fbbf24", "#f472b6", "#a78bfa", "#fb7185"];
+
+      const state = {
+        mode: "menu",
+        board: [],
+        selected: null,
+        score: 0,
+        moves: 0,
+        combo: 0,
+        msg: "Pulsa ENTER o click para empezar",
+      };
+
+      function randInt(max) {
+        return Math.floor(Math.random() * max);
+      }
+
+      function newBoard() {
+        const b = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+        for (let r = 0; r < ROWS; r += 1) {
+          for (let c = 0; c < COLS; c += 1) {
+            let t = randInt(TYPES);
+            while (
+              (c >= 2 && b[r][c - 1] === t && b[r][c - 2] === t) ||
+              (r >= 2 && b[r - 1][c] === t && b[r - 2][c] === t)
+            ) {
+              t = randInt(TYPES);
+            }
+            b[r][c] = t;
+          }
+        }
+        return b;
+      }
+
+      function reset() {
+        state.mode = "playing";
+        state.board = newBoard();
+        state.selected = null;
+        state.score = 0;
+        state.moves = 0;
+        state.combo = 0;
+        state.msg = "Haz lineas de 3 o mas fichas";
+      }
+
+      function insideBoard(x, y) {
+        const c = Math.floor((x - BX) / CELL);
+        const r = Math.floor((y - BY) / CELL);
+        if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return null;
+        return { r, c };
+      }
+
+      function areAdjacent(a, b) {
+        return Math.abs(a.r - b.r) + Math.abs(a.c - b.c) === 1;
+      }
+
+      function swapCells(a, b) {
+        const tmp = state.board[a.r][a.c];
+        state.board[a.r][a.c] = state.board[b.r][b.c];
+        state.board[b.r][b.c] = tmp;
+      }
+
+      function collectMatches() {
+        const mark = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
+        let total = 0;
+
+        for (let r = 0; r < ROWS; r += 1) {
+          let c = 0;
+          while (c < COLS) {
+            const t = state.board[r][c];
+            let k = c + 1;
+            while (k < COLS && state.board[r][k] === t) k += 1;
+            if (k - c >= 3) {
+              for (let i = c; i < k; i += 1) {
+                if (!mark[r][i]) {
+                  mark[r][i] = true;
+                  total += 1;
+                }
+              }
+            }
+            c = k;
+          }
+        }
+
+        for (let c = 0; c < COLS; c += 1) {
+          let r = 0;
+          while (r < ROWS) {
+            const t = state.board[r][c];
+            let k = r + 1;
+            while (k < ROWS && state.board[k][c] === t) k += 1;
+            if (k - r >= 3) {
+              for (let i = r; i < k; i += 1) {
+                if (!mark[i][c]) {
+                  mark[i][c] = true;
+                  total += 1;
+                }
+              }
+            }
+            r = k;
+          }
+        }
+
+        return { mark, total };
+      }
+
+      function dropAndRefill(mark) {
+        for (let c = 0; c < COLS; c += 1) {
+          const keep = [];
+          for (let r = ROWS - 1; r >= 0; r -= 1) {
+            if (!mark[r][c]) keep.push(state.board[r][c]);
+          }
+          while (keep.length < ROWS) keep.push(randInt(TYPES));
+          for (let r = ROWS - 1, i = 0; r >= 0; r -= 1, i += 1) {
+            state.board[r][c] = keep[i];
+          }
+        }
+      }
+
+      function resolveBoard() {
+        let combo = 0;
+        while (true) {
+          const { mark, total } = collectMatches();
+          if (total === 0) break;
+          combo += 1;
+          dropAndRefill(mark);
+          state.score += total * 10 * combo;
+        }
+        state.combo = combo;
+      }
+
+      function handleCellPick(cell) {
+        if (state.mode === "menu") reset();
+        if (state.mode !== "playing") return;
+
+        if (!state.selected) {
+          state.selected = cell;
+          return;
+        }
+
+        if (state.selected.r === cell.r && state.selected.c === cell.c) {
+          state.selected = null;
+          return;
+        }
+
+        if (!areAdjacent(state.selected, cell)) {
+          state.selected = cell;
+          return;
+        }
+
+        const first = state.selected;
+        swapCells(first, cell);
+        const test = collectMatches();
+
+        if (test.total === 0) {
+          swapCells(first, cell);
+          state.msg = "Ese intercambio no forma linea";
+          state.selected = null;
+          return;
+        }
+
+        state.moves += 1;
+        state.msg = "Buen movimiento";
+        state.selected = null;
+        resolveBoard();
+      }
+
+      function drawGem(x, y, t, selected) {
+        const size = CELL - 8;
+        const px = x + 4;
+        const py = y + 4;
+
+        ctx.fillStyle = selected ? "#ffffff" : "rgba(255,255,255,0.22)";
+        ctx.fillRect(px - 1, py - 1, size + 2, size + 2);
+
+        const grad = ctx.createLinearGradient(px, py, px, py + size);
+        grad.addColorStop(0, colors[t]);
+        grad.addColorStop(1, "#1f2937");
+        ctx.fillStyle = grad;
+        ctx.fillRect(px, py, size, size);
+
+        ctx.fillStyle = "rgba(255,255,255,0.35)";
+        ctx.fillRect(px + 6, py + 6, size - 12, 8);
+      }
+
+      function draw() {
+        const bg = ctx.createLinearGradient(0, 0, 0, H);
+        bg.addColorStop(0, "#122746");
+        bg.addColorStop(1, "#0e1b2f");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.fillStyle = "rgba(9, 18, 34, 0.88)";
+        ctx.fillRect(36, 24, W - 72, 74);
+        ctx.strokeStyle = "rgba(156, 195, 247, 0.6)";
+        ctx.strokeRect(36, 24, W - 72, 74);
+
+        ctx.fillStyle = "#e7f1ff";
+        ctx.font = "bold 34px Trebuchet MS, Segoe UI, sans-serif";
+        ctx.fillText("LINE THRE", 56, 68);
+
+        ctx.font = "bold 18px Trebuchet MS, Segoe UI, sans-serif";
+        ctx.fillStyle = "#c6dcfb";
+        ctx.fillText(`Score: ${state.score}`, 320, 56);
+        ctx.fillText(`Movimientos: ${state.moves}`, 320, 80);
+        ctx.fillText(`Combo: ${state.combo}`, 580, 56);
+
+        ctx.fillStyle = "rgba(10, 20, 37, 0.9)";
+        ctx.fillRect(BX - 10, BY - 10, COLS * CELL + 20, ROWS * CELL + 20);
+        ctx.strokeStyle = "rgba(166, 201, 249, 0.55)";
+        ctx.strokeRect(BX - 10, BY - 10, COLS * CELL + 20, ROWS * CELL + 20);
+
+        for (let r = 0; r < ROWS; r += 1) {
+          for (let c = 0; c < COLS; c += 1) {
+            const x = BX + c * CELL;
+            const y = BY + r * CELL;
+            const selected = state.selected && state.selected.r === r && state.selected.c === c;
+            drawGem(x, y, state.board[r][c], selected);
+          }
+        }
+
+        ctx.fillStyle = "rgba(8, 16, 30, 0.9)";
+        ctx.fillRect(58, H - 42, W - 116, 26);
+        ctx.strokeStyle = "rgba(170, 202, 248, 0.35)";
+        ctx.strokeRect(58, H - 42, W - 116, 26);
+        ctx.fillStyle = "#d7e8ff";
+        ctx.font = "bold 15px Trebuchet MS, Segoe UI, sans-serif";
+        ctx.fillText(state.msg, 70, H - 23);
+
+        if (state.mode === "menu") {
+          ctx.fillStyle = "rgba(10, 18, 34, 0.58)";
+          ctx.fillRect(0, 0, W, H);
+          ctx.fillStyle = "rgba(21, 35, 60, 0.96)";
+          ctx.fillRect(180, 220, W - 360, 170);
+          ctx.strokeStyle = "rgba(170, 203, 247, 0.75)";
+          ctx.strokeRect(180, 220, W - 360, 170);
+          ctx.textAlign = "center";
+          ctx.fillStyle = "#eef5ff";
+          ctx.font = "bold 44px Trebuchet MS, Segoe UI, sans-serif";
+          ctx.fillText("LINE THRE", W / 2, 278);
+          ctx.font = "20px Trebuchet MS, Segoe UI, sans-serif";
+          ctx.fillStyle = "#d8e8ff";
+          ctx.fillText("Conecta 3 o mas fichas del mismo color", W / 2, 322);
+          ctx.fillText("ENTER o click para empezar", W / 2, 352);
+          ctx.textAlign = "start";
+        }
+      }
+
+      function cellFromEvent(ev) {
+        const rect = canvas.getBoundingClientRect();
+        const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
+        const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
+        return insideBoard(x, y);
+      }
+
+      function gameToText() {
+        return JSON.stringify({
+          title: "Line Thre",
+          coordinateSystem: "tablero 8x8 indexado por fila/columna con origen arriba-izquierda",
+          mode: state.mode,
+          score: state.score,
+          moves: state.moves,
+          combo: state.combo,
+          selected: state.selected,
+          board: state.board.map((row) => row.map((v) => String(v))),
+          message: state.msg,
+        });
+      }
+
+      function advanceBy(ms) {
+        const steps = Math.max(1, Math.round(ms / (1000 / 60)));
+        for (let i = 0; i < steps; i += 1) {
+          // no temporal simulation needed for this puzzle loop
+        }
+        draw();
+      }
+
+      function toggleFullscreen() {
+        if (!document.fullscreenElement) canvas.requestFullscreen().catch(() => {});
+        else document.exitFullscreen().catch(() => {});
+      }
+
+      canvas.addEventListener("pointerdown", (ev) => {
+        const cell = cellFromEvent(ev);
+        if (cell) handleCellPick(cell);
+        else if (state.mode === "menu") reset();
+        draw();
+      });
+
+      window.addEventListener("keydown", (ev) => {
+        const key = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+        if (key === "Enter" && state.mode === "menu") reset();
+        if (key === "r") reset();
+        if (key === "f") toggleFullscreen();
+        draw();
+      });
+
+      window.render_game_to_text = gameToText;
+      window.advanceTime = advanceBy;
+
+      reset();
+      state.mode = "menu";
+      state.msg = "Pulsa ENTER o click para empezar";
+      draw();
+    })();
+  </script>
 </body>
 </html>

@@ -1,0 +1,24 @@
+{
+  "name": "game_container",
+  "version": "1.0.0",
+  "description": "```text /share/webgames/site1/   index.html   assets/   games/     juego1/       index.html     juego2/       index.html ```",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sanher/Game_container.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Sanher/Game_container/issues"
+  },
+  "homepage": "https://github.com/Sanher/Game_container#readme",
+  "dependencies": {
+    "playwright": "^1.58.2"
+  }
+}

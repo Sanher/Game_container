@@ -3,11 +3,477 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Juego 2</title>
+  <title>Scam Scape (provisional)</title>
+  <style>
+    :root {
+      --bg0: #1d132b;
+      --bg1: #4b2d5e;
+      --ink: #f6f0ff;
+      --muted: #ddcdf6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      color: var(--ink);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(900px 620px at 12% 14%, #6d4693 0%, transparent 62%),
+        radial-gradient(900px 620px at 84% 88%, #2f1f49 0%, transparent 62%),
+        linear-gradient(160deg, var(--bg0), var(--bg1));
+    }
+    .wrap {
+      width: min(100vw - 20px, 1040px);
+      display: grid;
+      gap: 10px;
+      justify-items: center;
+    }
+    canvas {
+      width: 100%;
+      max-width: 980px;
+      aspect-ratio: 16 / 10;
+      border: 1px solid #c9aef1;
+      border-radius: 12px;
+      background: #170f28;
+      box-shadow: 0 20px 64px rgba(0, 0, 0, 0.46);
+    }
+    .hint {
+      font-size: 13px;
+      color: var(--muted);
+      text-align: center;
+      line-height: 1.45;
+    }
+    a { color: #efdfff; }
+  </style>
 </head>
 <body>
-  <h1>Juego 2 listo</h1>
-  <p>Ruta esperada: <code>/g/j2</code> y alias <code>/j2</code>.</p>
-  <a href="/g">Volver</a>
+  <div class="wrap">
+    <canvas id="game" width="980" height="620" aria-label="Scam Scape"></canvas>
+    <div class="hint">Scam Scape (provisional): mueve al personaje con WASD/flechas, cambia a pajaro con C o Tab. Activa las dos placas para abrir la puerta y escapar. R reinicia, F fullscreen. <a href="/g">Volver</a></div>
+  </div>
+
+  <script>
+    (() => {
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+
+      const W = canvas.width;
+      const H = canvas.height;
+      const GW = 14;
+      const GH = 10;
+      const CELL = 52;
+      const BX = Math.floor((W - GW * CELL) / 2);
+      const BY = 84;
+
+      const TILE_FLOOR = 0;
+      const TILE_WALL = 1;
+      const TILE_PIT = 2;
+
+      const state = {
+        title: "Scam Scape",
+        mode: "menu",
+        level: 1,
+        active: "hero",
+        msg: "Pulsa ENTER para empezar",
+        tiles: [],
+        hero: { x: 1, y: GH - 2 },
+        bird: { x: 2, y: GH - 2 },
+        crate: { x: 3, y: GH - 2 },
+        door: { x: GW - 2, y: 1 },
+        plateA: { x: 6, y: 6 },
+        plateB: { x: 9, y: 3 },
+        doorOpen: false,
+      };
+
+      function seeded(level) {
+        let s = (level * 1103515245 + 12345) >>> 0;
+        return () => {
+          s = (s * 1664525 + 1013904223) >>> 0;
+          return s / 0x100000000;
+        };
+      }
+
+      function keyOf(x, y) {
+        return `${x},${y}`;
+      }
+
+      function randomCell(rng, guard) {
+        for (let i = 0; i < 300; i += 1) {
+          const x = 1 + Math.floor(rng() * (GW - 2));
+          const y = 1 + Math.floor(rng() * (GH - 2));
+          if (guard(x, y)) return { x, y };
+        }
+        return null;
+      }
+
+      function generateLevel(level) {
+        const rng = seeded(level);
+        const blocked = new Set();
+
+        state.tiles = Array.from({ length: GH }, (_, y) => Array.from({ length: GW }, (_, x) => {
+          const border = x === 0 || y === 0 || x === GW - 1 || y === GH - 1;
+          return border ? TILE_WALL : TILE_FLOOR;
+        }));
+
+        state.hero = { x: 1, y: GH - 2 };
+        state.bird = { x: 2, y: GH - 2 };
+        state.door = { x: GW - 2, y: 1 };
+        blocked.add(keyOf(state.hero.x, state.hero.y));
+        blocked.add(keyOf(state.bird.x, state.bird.y));
+        blocked.add(keyOf(state.door.x, state.door.y));
+
+        const interiorWalls = 8 + Math.min(12, level * 2);
+        for (let i = 0; i < interiorWalls; i += 1) {
+          const c = randomCell(rng, (x, y) => {
+            if (blocked.has(keyOf(x, y))) return false;
+            if (Math.abs(x - state.hero.x) + Math.abs(y - state.hero.y) <= 2) return false;
+            if (Math.abs(x - state.door.x) + Math.abs(y - state.door.y) <= 1) return false;
+            return state.tiles[y][x] === TILE_FLOOR;
+          });
+          if (c) state.tiles[c.y][c.x] = TILE_WALL;
+        }
+
+        const pits = 8 + Math.min(10, level);
+        for (let i = 0; i < pits; i += 1) {
+          const c = randomCell(rng, (x, y) => {
+            if (blocked.has(keyOf(x, y))) return false;
+            if (Math.abs(x - state.hero.x) + Math.abs(y - state.hero.y) <= 2) return false;
+            if (state.tiles[y][x] !== TILE_FLOOR) return false;
+            return true;
+          });
+          if (c) state.tiles[c.y][c.x] = TILE_PIT;
+        }
+
+        state.plateA = randomCell(rng, (x, y) => {
+          if (blocked.has(keyOf(x, y))) return false;
+          if (state.tiles[y][x] !== TILE_FLOOR) return false;
+          if (Math.abs(x - state.hero.x) + Math.abs(y - state.hero.y) <= 2) return false;
+          return true;
+        }) || { x: 5, y: GH - 3 };
+
+        state.plateB = randomCell(rng, (x, y) => {
+          if (blocked.has(keyOf(x, y))) return false;
+          return state.tiles[y][x] === TILE_PIT;
+        }) || { x: GW - 4, y: 3 };
+
+        state.tiles[state.plateB.y][state.plateB.x] = TILE_PIT;
+
+        state.crate = randomCell(rng, (x, y) => {
+          if (state.tiles[y][x] !== TILE_FLOOR) return false;
+          if (Math.abs(x - state.hero.x) + Math.abs(y - state.hero.y) > 4) return false;
+          if (x === state.plateA.x && y === state.plateA.y) return false;
+          return true;
+        }) || { x: 3, y: GH - 2 };
+
+        state.active = "hero";
+        state.doorOpen = false;
+        state.msg = "Empuja la caja a la placa dorada y lleva al pajaro a la placa de abismo";
+      }
+
+      function resetGame() {
+        state.mode = "playing";
+        state.level = 1;
+        generateLevel(state.level);
+      }
+
+      function cellBlockedForHero(x, y) {
+        if (x < 0 || x >= GW || y < 0 || y >= GH) return true;
+        const t = state.tiles[y][x];
+        if (t === TILE_WALL || t === TILE_PIT) return true;
+        return false;
+      }
+
+      function cellBlockedForBird(x, y) {
+        if (x < 0 || x >= GW || y < 0 || y >= GH) return true;
+        return state.tiles[y][x] === TILE_WALL;
+      }
+
+      function updateDoorState() {
+        const activeA =
+          (state.hero.x === state.plateA.x && state.hero.y === state.plateA.y) ||
+          (state.bird.x === state.plateA.x && state.bird.y === state.plateA.y) ||
+          (state.crate.x === state.plateA.x && state.crate.y === state.plateA.y);
+
+        const activeB = state.bird.x === state.plateB.x && state.bird.y === state.plateB.y;
+
+        state.doorOpen = activeA && activeB;
+      }
+
+      function stepHero(dx, dy) {
+        const tx = state.hero.x + dx;
+        const ty = state.hero.y + dy;
+
+        if (tx === state.crate.x && ty === state.crate.y) {
+          const nx = state.crate.x + dx;
+          const ny = state.crate.y + dy;
+          if (nx === state.door.x && ny === state.door.y) return;
+          if (nx === state.bird.x && ny === state.bird.y) return;
+          if (cellBlockedForHero(nx, ny)) return;
+          state.crate.x = nx;
+          state.crate.y = ny;
+        } else if (cellBlockedForHero(tx, ty)) {
+          return;
+        }
+
+        if (tx === state.bird.x && ty === state.bird.y) return;
+
+        state.hero.x = tx;
+        state.hero.y = ty;
+      }
+
+      function stepBird(dx, dy) {
+        const tx = state.bird.x + dx;
+        const ty = state.bird.y + dy;
+        if (cellBlockedForBird(tx, ty)) return;
+        if (tx === state.crate.x && ty === state.crate.y) return;
+        if (tx === state.hero.x && ty === state.hero.y) return;
+        state.bird.x = tx;
+        state.bird.y = ty;
+      }
+
+      function tryMove(dx, dy) {
+        if (state.mode !== "playing") return;
+        if (state.active === "hero") stepHero(dx, dy);
+        else stepBird(dx, dy);
+
+        updateDoorState();
+
+        if (state.hero.x === state.door.x && state.hero.y === state.door.y) {
+          if (state.doorOpen) {
+            state.level += 1;
+            generateLevel(state.level);
+            state.msg = `Escape conseguido. Cargando nivel ${state.level}`;
+          } else {
+            state.msg = "La puerta sigue cerrada";
+          }
+        }
+      }
+
+      function drawTile(x, y, t) {
+        const px = BX + x * CELL;
+        const py = BY + y * CELL;
+
+        if (t === TILE_WALL) {
+          ctx.fillStyle = "#2f2544";
+          ctx.fillRect(px, py, CELL, CELL);
+          ctx.fillStyle = "rgba(255,255,255,0.08)";
+          ctx.fillRect(px + 2, py + 2, CELL - 4, 8);
+        } else if (t === TILE_PIT) {
+          ctx.fillStyle = "#0f0b1a";
+          ctx.fillRect(px, py, CELL, CELL);
+          ctx.strokeStyle = "rgba(199, 162, 245, 0.25)";
+          ctx.strokeRect(px + 4, py + 4, CELL - 8, CELL - 8);
+        } else {
+          ctx.fillStyle = "#271b3e";
+          ctx.fillRect(px, py, CELL, CELL);
+        }
+
+        ctx.strokeStyle = "rgba(218, 196, 247, 0.16)";
+        ctx.strokeRect(px, py, CELL, CELL);
+      }
+
+      function draw() {
+        if (state.tiles.length !== GH) {
+          generateLevel(state.level);
+        }
+
+        const bg = ctx.createLinearGradient(0, 0, 0, H);
+        bg.addColorStop(0, "#22163a");
+        bg.addColorStop(1, "#120c20");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.fillStyle = "rgba(25, 15, 41, 0.9)";
+        ctx.fillRect(28, 20, W - 56, 56);
+        ctx.strokeStyle = "rgba(223, 203, 248, 0.5)";
+        ctx.strokeRect(28, 20, W - 56, 56);
+
+        ctx.fillStyle = "#f5eeff";
+        ctx.font = "bold 30px Trebuchet MS, Segoe UI, sans-serif";
+        ctx.fillText("SCAM SCAPE", 46, 56);
+
+        ctx.font = "bold 18px Trebuchet MS, Segoe UI, sans-serif";
+        ctx.fillStyle = "#e6d8fa";
+        ctx.fillText(`Nivel procedural: ${state.level}`, 360, 46);
+        ctx.fillText(`Control activo: ${state.active === "hero" ? "personaje" : "pajaro"}`, 360, 68);
+
+        for (let y = 0; y < GH; y += 1) {
+          for (let x = 0; x < GW; x += 1) {
+            drawTile(x, y, state.tiles[y][x]);
+          }
+        }
+
+        const aX = BX + state.plateA.x * CELL;
+        const aY = BY + state.plateA.y * CELL;
+        ctx.fillStyle = "#f7c948";
+        ctx.fillRect(aX + 10, aY + 10, CELL - 20, CELL - 20);
+
+        const bX = BX + state.plateB.x * CELL;
+        const bY = BY + state.plateB.y * CELL;
+        ctx.fillStyle = "#67e8f9";
+        ctx.beginPath();
+        ctx.arc(bX + CELL / 2, bY + CELL / 2, 12, 0, Math.PI * 2);
+        ctx.fill();
+
+        const dX = BX + state.door.x * CELL;
+        const dY = BY + state.door.y * CELL;
+        ctx.fillStyle = state.doorOpen ? "#4ade80" : "#ef4444";
+        ctx.fillRect(dX + 8, dY + 6, CELL - 16, CELL - 12);
+        ctx.fillStyle = "rgba(0,0,0,0.3)";
+        ctx.fillRect(dX + 14, dY + 12, CELL - 28, CELL - 24);
+
+        const cX = BX + state.crate.x * CELL;
+        const cY = BY + state.crate.y * CELL;
+        ctx.fillStyle = "#f59e0b";
+        ctx.fillRect(cX + 8, cY + 8, CELL - 16, CELL - 16);
+        ctx.strokeStyle = "rgba(255,255,255,0.5)";
+        ctx.strokeRect(cX + 8, cY + 8, CELL - 16, CELL - 16);
+
+        const hX = BX + state.hero.x * CELL + CELL / 2;
+        const hY = BY + state.hero.y * CELL + CELL / 2;
+        ctx.fillStyle = state.active === "hero" ? "#86efac" : "#4ade80";
+        ctx.beginPath();
+        ctx.arc(hX, hY, 14, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#052e16";
+        ctx.fillRect(hX - 5, hY - 2, 10, 10);
+
+        const bCX = BX + state.bird.x * CELL + CELL / 2;
+        const bCY = BY + state.bird.y * CELL + CELL / 2;
+        ctx.fillStyle = state.active === "bird" ? "#93c5fd" : "#60a5fa";
+        ctx.beginPath();
+        ctx.moveTo(bCX - 14, bCY + 10);
+        ctx.lineTo(bCX + 14, bCY);
+        ctx.lineTo(bCX - 14, bCY - 10);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = "rgba(14, 9, 24, 0.92)";
+        ctx.fillRect(40, H - 40, W - 80, 24);
+        ctx.strokeStyle = "rgba(224, 204, 247, 0.35)";
+        ctx.strokeRect(40, H - 40, W - 80, 24);
+        ctx.fillStyle = "#f0e4ff";
+        ctx.font = "bold 14px Trebuchet MS, Segoe UI, sans-serif";
+        ctx.fillText(state.msg, 52, H - 23);
+
+        if (state.mode === "menu") {
+          ctx.fillStyle = "rgba(16, 11, 27, 0.62)";
+          ctx.fillRect(0, 0, W, H);
+          ctx.fillStyle = "rgba(35, 21, 58, 0.96)";
+          ctx.fillRect(180, 220, W - 360, 190);
+          ctx.strokeStyle = "rgba(223, 204, 247, 0.72)";
+          ctx.strokeRect(180, 220, W - 360, 190);
+          ctx.textAlign = "center";
+          ctx.fillStyle = "#fbf5ff";
+          ctx.font = "bold 42px Trebuchet MS, Segoe UI, sans-serif";
+          ctx.fillText("SCAM SCAPE", W / 2, 275);
+          ctx.font = "20px Trebuchet MS, Segoe UI, sans-serif";
+          ctx.fillText("Personaje + pajaro, puzzles y escape procedural", W / 2, 316);
+          ctx.fillText("ENTER para empezar", W / 2, 348);
+          ctx.fillText("C o TAB cambia de personaje", W / 2, 374);
+          ctx.textAlign = "start";
+        }
+      }
+
+      function gameToText() {
+        const map = [];
+        for (let y = 0; y < GH; y += 1) {
+          const row = [];
+          for (let x = 0; x < GW; x += 1) {
+            if (x === state.hero.x && y === state.hero.y) row.push("H");
+            else if (x === state.bird.x && y === state.bird.y) row.push("B");
+            else if (x === state.crate.x && y === state.crate.y) row.push("C");
+            else if (x === state.door.x && y === state.door.y) row.push(state.doorOpen ? "O" : "D");
+            else if (x === state.plateA.x && y === state.plateA.y) row.push("A");
+            else if (x === state.plateB.x && y === state.plateB.y) row.push("P");
+            else row.push(state.tiles[y][x] === TILE_WALL ? "#" : state.tiles[y][x] === TILE_PIT ? "~" : ".");
+          }
+          map.push(row);
+        }
+
+        return JSON.stringify({
+          title: state.title,
+          coordinateSystem: "rejilla 14x10, origen arriba-izquierda, x hacia derecha, y hacia abajo",
+          mode: state.mode,
+          level: state.level,
+          activeControl: state.active,
+          doorOpen: state.doorOpen,
+          hero: { ...state.hero },
+          bird: { ...state.bird },
+          crate: { ...state.crate },
+          plateA: { ...state.plateA },
+          plateB: { ...state.plateB },
+          door: { ...state.door },
+          map,
+          message: state.msg,
+        });
+      }
+
+      function advanceBy(ms) {
+        const steps = Math.max(1, Math.round(ms / (1000 / 60)));
+        for (let i = 0; i < steps; i += 1) {
+          // turn-based puzzle: no continuous simulation needed
+        }
+        draw();
+      }
+
+      function toggleFullscreen() {
+        if (!document.fullscreenElement) canvas.requestFullscreen().catch(() => {});
+        else document.exitFullscreen().catch(() => {});
+      }
+
+      function toggleActive() {
+        if (state.mode !== "playing") return;
+        state.active = state.active === "hero" ? "bird" : "hero";
+        state.msg = state.active === "hero" ? "Control del personaje" : "Control del pajaro";
+      }
+
+      window.addEventListener("keydown", (ev) => {
+        const key = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+
+        if (key === "Enter" && state.mode === "menu") {
+          resetGame();
+          draw();
+          return;
+        }
+
+        if (key === "r") {
+          if (state.mode === "menu") resetGame();
+          else generateLevel(state.level);
+          draw();
+          return;
+        }
+
+        if (key === "f") {
+          toggleFullscreen();
+          return;
+        }
+
+        if (key === "Tab" || key === "c") {
+          ev.preventDefault();
+          toggleActive();
+          draw();
+          return;
+        }
+
+        if (state.mode !== "playing") return;
+
+        if (key === "ArrowLeft" || key === "a") tryMove(-1, 0);
+        if (key === "ArrowRight" || key === "d") tryMove(1, 0);
+        if (key === "ArrowUp" || key === "w") tryMove(0, -1);
+        if (key === "ArrowDown" || key === "s") tryMove(0, 1);
+
+        draw();
+      });
+
+      window.render_game_to_text = gameToText;
+      window.advanceTime = advanceBy;
+
+      generateLevel(state.level);
+      draw();
+    })();
+  </script>
 </body>
 </html>

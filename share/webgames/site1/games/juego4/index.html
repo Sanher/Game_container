@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DEXTris</title>
+  <style>
+    :root { --bg:#081522; --ink:#e2e8f0; --muted:#93c5fd; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      color: var(--ink);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(900px 580px at 18% 12%, #1e3a8a 0%, transparent 58%),
+        radial-gradient(900px 560px at 85% 90%, #14532d 0%, transparent 58%),
+        linear-gradient(155deg, #030712, var(--bg));
+    }
+    .wrap { width: min(100vw - 20px, 980px); display: grid; gap: 10px; }
+    canvas {
+      width: 100%;
+      aspect-ratio: 16/10;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      background: #061423;
+      box-shadow: 0 20px 60px rgba(0,0,0,.4);
+    }
+    .hint { font-size: 13px; color: var(--muted); text-align: center; }
+    a { color: #7dd3fc; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="960" height="600" aria-label="DEXTris"></canvas>
+    <div class="hint">Mover: A/D o flechas | Rotar: W/Arriba | Bajar: S/Abajo | Soltar: Espacio | Enter: empezar | F: fullscreen | <a href="/g">Volver</a></div>
+  </div>
+
+  <script>
+    (() => {
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+      const W = canvas.width;
+      const H = canvas.height;
+      const COLS = 10;
+      const ROWS = 20;
+      const CELL = 24;
+      const BX = 120;
+      const BY = 60;
+
+      const SHAPES = {
+        I: { c: "#38bdf8", s: [[-1,0],[0,0],[1,0],[2,0]] },
+        O: { c: "#facc15", s: [[0,0],[1,0],[0,1],[1,1]] },
+        T: { c: "#c084fc", s: [[-1,0],[0,0],[1,0],[0,1]] },
+        S: { c: "#34d399", s: [[0,0],[1,0],[-1,1],[0,1]] },
+        Z: { c: "#fb7185", s: [[-1,0],[0,0],[0,1],[1,1]] },
+        J: { c: "#60a5fa", s: [[-1,0],[0,0],[1,0],[-1,1]] },
+        L: { c: "#f97316", s: [[-1,0],[0,0],[1,0],[1,1]] },
+      };
+      const TYPES = Object.keys(SHAPES);
+
+      const keysHeld = new Set();
+      const keysTap = new Set();
+      const map = { ArrowLeft:"left", ArrowRight:"right", ArrowDown:"down", ArrowUp:"rot", a:"left", d:"right", s:"down", w:"rot", " ":"drop" };
+
+      const state = {
+        mode: "menu",
+        board: Array.from({ length: ROWS }, () => Array(COLS).fill(null)),
+        active: null,
+        next: TYPES[Math.floor(Math.random() * TYPES.length)],
+        score: 0,
+        lines: 0,
+        level: 1,
+        fall: 0,
+        tick: 0,
+        kickMsg: "",
+        kickT: 0,
+        msg: "Pulsa ENTER para comenzar"
+      };
+
+      function randomType() { return TYPES[Math.floor(Math.random() * TYPES.length)]; }
+      function cloneShape(type) { return SHAPES[type].s.map(([x,y]) => ({ x, y })); }
+      function inBounds(x, y) { return x >= 0 && x < COLS && y >= 0 && y < ROWS; }
+
+      function spawn() {
+        const type = state.next;
+        state.next = randomType();
+        state.active = { type, color: SHAPES[type].c, x: Math.floor(COLS / 2), y: 0, cells: cloneShape(type) };
+        if (collides(state.active, 0, 0)) {
+          state.mode = "gameover";
+          state.msg = "Tablero lleno. ENTER para reiniciar";
+        }
+      }
+
+      function reset() {
+        state.mode = "playing";
+        state.board = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+        state.score = 0;
+        state.lines = 0;
+        state.level = 1;
+        state.fall = 0;
+        state.tick = 0;
+        state.kickMsg = "";
+        state.kickT = 0;
+        state.next = randomType();
+        spawn();
+      }
+
+      function cells(piece, dx = 0, dy = 0, custom = null) {
+        const src = custom || piece.cells;
+        return src.map((p, i) => ({ i, x: piece.x + p.x + dx, y: piece.y + p.y + dy }));
+      }
+
+      function collides(piece, dx, dy, custom = null) {
+        for (const c of cells(piece, dx, dy, custom)) {
+          if (c.x < 0 || c.x >= COLS || c.y >= ROWS) return true;
+          if (c.y >= 0 && state.board[c.y][c.x]) return true;
+        }
+        return false;
+      }
+
+      function neighbors4(x, y) {
+        let n = 0;
+        const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+        for (const [dx, dy] of dirs) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (inBounds(nx, ny) && state.board[ny][nx]) n += 1;
+        }
+        return n;
+      }
+
+      function weight(dir, pivotX) {
+        let total = 0;
+        for (let y = 0; y < ROWS; y++) {
+          for (let x = 0; x < COLS; x++) {
+            if (!state.board[y][x]) continue;
+            if (dir < 0 && x < pivotX) total += 1;
+            if (dir > 0 && x > pivotX) total += 1;
+          }
+        }
+        return total;
+      }
+
+      function eject(hit) {
+        const p = state.active;
+        if (!p || p.type === "O") return false;
+        if (!hit || !inBounds(hit.tx, hit.ty)) return false;
+        if (neighbors4(hit.tx, hit.ty) > 1) return false;
+
+        const dir = weight(-1, hit.tx) <= weight(1, hit.tx) ? -1 : 1;
+        const removed = p.cells.splice(hit.i, 1)[0];
+        if (!removed) return false;
+
+        let x = p.x + removed.x;
+        let y = Math.max(0, p.y + removed.y);
+        while (x + dir >= 0 && x + dir < COLS && !state.board[y][x + dir]) x += dir;
+        while (y + 1 < ROWS && !state.board[y + 1][x]) y += 1;
+
+        if (inBounds(x, y) && !state.board[y][x]) {
+          state.board[y][x] = { color: p.color };
+          state.score += 25;
+          state.kickMsg = `Bloque expulsado a ${dir < 0 ? "izquierda" : "derecha"}`;
+          state.kickT = 1.2;
+          if (p.cells.length === 0) spawn();
+          return true;
+        }
+        return false;
+      }
+
+      function downCollision() {
+        const p = state.active;
+        if (!p) return null;
+        for (const c of cells(p, 0, 1)) {
+          if (c.x < 0 || c.x >= COLS || c.y >= ROWS) return { i: c.i, tx: c.x, ty: Math.min(c.y, ROWS - 1) };
+          if (c.y >= 0 && state.board[c.y][c.x]) return { i: c.i, tx: c.x, ty: c.y };
+        }
+        return null;
+      }
+
+      function clearLines() {
+        const keep = [];
+        let cleared = 0;
+        for (let y = 0; y < ROWS; y++) {
+          if (state.board[y].every(Boolean)) cleared += 1;
+          else keep.push(state.board[y]);
+        }
+        while (keep.length < ROWS) keep.unshift(Array(COLS).fill(null));
+        if (!cleared) return;
+        state.board = keep;
+        state.lines += cleared;
+        state.level = 1 + Math.floor(state.lines / 10);
+        state.score += [0,100,300,500,800][cleared] * state.level;
+      }
+
+      function lockPiece() {
+        const p = state.active;
+        if (!p) return;
+        for (const c of cells(p)) if (c.y >= 0 && inBounds(c.x, c.y)) state.board[c.y][c.x] = { color: p.color };
+        clearLines();
+        spawn();
+      }
+
+      function move(dx, dy) {
+        const p = state.active;
+        if (!p) return false;
+        if (!collides(p, dx, dy)) {
+          p.x += dx;
+          p.y += dy;
+          return true;
+        }
+        if (dy === 1 && dx === 0) {
+          const hit = downCollision();
+          if (eject(hit)) {
+            if (!collides(p, 0, 1)) p.y += 1;
+            return true;
+          }
+          lockPiece();
+        }
+        return false;
+      }
+
+      function rotate() {
+        const p = state.active;
+        if (!p || p.type === "O") return;
+        const next = p.cells.map((v) => ({ x: -v.y, y: v.x }));
+        for (const kick of [0, -1, 1, -2, 2]) {
+          if (!collides(p, kick, 0, next)) {
+            p.cells = next;
+            p.x += kick;
+            return;
+          }
+        }
+      }
+
+      function hardDrop() {
+        let d = 0;
+        while (move(0, 1)) d += 1;
+        state.score += d * 2;
+      }
+
+      function update(dt) {
+        if (state.mode !== "playing") return;
+        state.tick += dt;
+        state.kickT = Math.max(0, state.kickT - dt);
+
+        if (keysTap.has("rot")) rotate();
+        if (keysTap.has("drop")) hardDrop();
+        if (keysTap.has("left")) move(-1, 0);
+        if (keysTap.has("right")) move(1, 0);
+        if (keysHeld.has("down")) { state.fall += 0.08; state.score += 1; }
+
+        const interval = Math.max(0.1, 0.6 - (state.level - 1) * 0.035);
+        state.fall += dt;
+        while (state.fall >= interval) {
+          state.fall -= interval;
+          move(0, 1);
+          if (state.mode !== "playing") break;
+        }
+      }
+
+      function block(x, y, color, ghost = false) {
+        const px = BX + x * CELL;
+        const py = BY + y * CELL;
+        ctx.fillStyle = ghost ? "rgba(148,163,184,.28)" : color;
+        ctx.fillRect(px + 1, py + 1, CELL - 2, CELL - 2);
+        if (!ghost) {
+          ctx.fillStyle = "rgba(255,255,255,.2)";
+          ctx.fillRect(px + 2, py + 2, CELL - 10, 4);
+        }
+      }
+
+      function draw() {
+        const g = ctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(0, "#041225");
+        g.addColorStop(1, "#020812");
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+
+        const bw = COLS * CELL;
+        const bh = ROWS * CELL;
+        ctx.fillStyle = "rgba(6,18,34,.9)";
+        ctx.fillRect(BX, BY, bw, bh);
+        ctx.strokeStyle = "rgba(125,211,252,.45)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(BX - 1, BY - 1, bw + 2, bh + 2);
+
+        ctx.strokeStyle = "rgba(148,163,184,.14)";
+        ctx.lineWidth = 1;
+        for (let x = 0; x <= COLS; x++) {
+          const px = BX + x * CELL;
+          ctx.beginPath(); ctx.moveTo(px, BY); ctx.lineTo(px, BY + bh); ctx.stroke();
+        }
+        for (let y = 0; y <= ROWS; y++) {
+          const py = BY + y * CELL;
+          ctx.beginPath(); ctx.moveTo(BX, py); ctx.lineTo(BX + bw, py); ctx.stroke();
+        }
+
+        for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) if (state.board[y][x]) block(x, y, state.board[y][x].color);
+
+        if (state.active) {
+          const ghost = { ...state.active, cells: state.active.cells.map((c) => ({ ...c })) };
+          while (!collides(ghost, 0, 1)) ghost.y += 1;
+          for (const c of cells(ghost)) if (c.y >= 0) block(c.x, c.y, "", true);
+          for (const c of cells(state.active)) if (c.y >= 0) block(c.x, c.y, state.active.color);
+        }
+
+        const px = BX + bw + 44;
+        ctx.fillStyle = "rgba(9,22,38,.78)";
+        ctx.fillRect(px, BY + 30, 220, 160);
+        ctx.strokeStyle = "rgba(56,189,248,.42)";
+        ctx.strokeRect(px, BY + 30, 220, 160);
+        ctx.fillStyle = "#dbeafe";
+        ctx.font = "bold 18px Trebuchet MS, Segoe UI, sans-serif";
+        ctx.fillText("Siguiente", px + 18, BY + 58);
+        const n = SHAPES[state.next];
+        for (const [sx, sy] of n.s) {
+          const x = px + 88 + sx * 24;
+          const y = BY + 106 + sy * 24;
+          ctx.fillStyle = n.c; ctx.fillRect(x, y, 22, 22);
+        }
+
+        ctx.fillStyle = "rgba(9,22,38,.78)";
+        ctx.fillRect(px, BY + 206, 220, 190);
+        ctx.strokeStyle = "rgba(56,189,248,.42)";
+        ctx.strokeRect(px, BY + 206, 220, 190);
+        ctx.fillStyle = "#dbeafe";
+        ctx.fillText(`Score: ${state.score}`, px + 18, BY + 245);
+        ctx.fillText(`Lineas: ${state.lines}`, px + 18, BY + 275);
+        ctx.fillText(`Nivel: ${state.level}`, px + 18, BY + 305);
+        ctx.fillStyle = state.kickT > 0 ? "#fcd34d" : "#93c5fd";
+        ctx.font = "16px Trebuchet MS, Segoe UI, sans-serif";
+        ctx.fillText(state.kickMsg || "Sin expulsiones", px + 18, BY + 345);
+
+        if (state.mode !== "playing") {
+          ctx.fillStyle = "rgba(2,6,12,.74)";
+          ctx.fillRect(0, 0, W, H);
+          ctx.textAlign = "center";
+          ctx.fillStyle = "#f8fafc";
+          ctx.font = "bold 44px Trebuchet MS, Segoe UI, sans-serif";
+          ctx.fillText("DEXTRIS", W / 2, H * 0.35);
+          ctx.font = "19px Trebuchet MS, Segoe UI, sans-serif";
+          ctx.fillStyle = "#bae6fd";
+          ctx.fillText("Piezas originales + bloque expulsado en salientes", W / 2, H * 0.46);
+          ctx.fillStyle = "#e2e8f0";
+          ctx.fillText(state.msg, W / 2, H * 0.56);
+          ctx.fillText("ENTER para jugar | F fullscreen", W / 2, H * 0.64);
+          ctx.textAlign = "start";
+        }
+      }
+
+      function toText() {
+        return JSON.stringify({
+          coordinateSystem: "origen arriba-izquierda; +x derecha; +y abajo; tablero 10x20",
+          mode: state.mode,
+          score: state.score,
+          lines: state.lines,
+          level: state.level,
+          active: state.active ? { type: state.active.type, x: state.active.x, y: state.active.y, cells: cells(state.active).filter((c) => c.y >= 0).map((c) => ({ x: c.x, y: c.y })) } : null,
+          next: state.next,
+          kick: state.kickT > 0 ? state.kickMsg : "",
+          filled: state.board.reduce((n, row) => n + row.filter(Boolean).length, 0)
+        });
+      }
+
+      function advance(ms) {
+        const fixed = 1 / 60;
+        const steps = Math.max(1, Math.round(ms / (1000 / 60)));
+        for (let i = 0; i < steps; i++) { update(fixed); keysTap.clear(); }
+        draw();
+      }
+
+      window.render_game_to_text = toText;
+      window.advanceTime = advance;
+
+      function toggleFullscreen() {
+        if (!document.fullscreenElement) canvas.requestFullscreen().catch(() => {});
+        else document.exitFullscreen().catch(() => {});
+      }
+
+      window.addEventListener("keydown", (ev) => {
+        const key = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+        if (key === "Enter" && state.mode !== "playing") reset();
+        if (key === "f") toggleFullscreen();
+        if (map[key]) { keysHeld.add(map[key]); keysTap.add(map[key]); ev.preventDefault(); }
+      });
+      window.addEventListener("keyup", (ev) => {
+        const key = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+        if (map[key]) { keysHeld.delete(map[key]); ev.preventDefault(); }
+      });
+
+      let last = 0;
+      function loop(ts) {
+        const dt = Math.min(0.033, (ts - last) / 1000 || 1 / 60);
+        last = ts;
+        update(dt);
+        draw();
+        keysTap.clear();
+        requestAnimationFrame(loop);
+      }
+      draw();
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>
